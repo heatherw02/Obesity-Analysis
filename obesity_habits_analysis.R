@@ -1,12 +1,11 @@
-
-##Clustering with Habits Code
-
-obesity <-  read.csv("C:/Users/heath/OneDrive/Documents/Book Math/151/Project/ObesityDataSet.csv")
-
-#First, cluster analysis
-library(klaR)
 library(clustMixType)
-library(cluster)
+library(cluster)   # silhouette + daisy (Gower)
+library(dplyr)
+library(ggplot2)
+library(tidyr) 
+
+obesity <- read.csv("C:/Users/heath/OneDrive/Documents/Book Math/151/Project/ObesityDataSet.csv")
+
 
 #convert categorical variables to factors
 obesity$Gender <- as.factor(obesity$Gender)
@@ -22,75 +21,133 @@ obesity$SCC  <- as.factor(obesity$SCC) #Do you monitor the calories you eat dail
 #obesity$FCVC  <- factor(obesity$FCVC, ordered=TRUE) #Do you usually eat vegetables in your Meal #IGNORE THIS BAD DATA
 
 #separation
-obesity_habits <- obesity[, c(8, 15, 10, 11, 6, 13, 16)] #CAEC, CALC, SMOKE, CH20, FAVC, FAF, MTRANS
-obesity_habits
+obesity_habits <- obesity[, c("CAEC","CALC","SMOKE","CH2O","FAVC","FAF","MTRANS","NCP")]
 
-#calculate totss ONCE outside the loop
-totss <- sum(daisy(obesity_habits, metric = "gower")^2)
+# --- ensure no missing values in the features you cluster on ---
+obesity_habits <- obesity_habits %>% tidyr::drop_na()
 
-kmeans.out <- list()
-ratio <- numeric(10)  # safer to pre-allocate
+# Precompute Gower distance ONCE for silhouette (works with mixed data)
+gower_dist <- daisy(obesity_habits, metric = "gower")
 
-#loop
-for(g in 2:10){
-  kmeans.out[[g]] <- kproto(obesity_habits, k = g, nstart = 15)
+set.seed(42)
+ks <- 2:10
+fits <- vector("list", length(ks))
+metrics <- data.frame(
+  k = ks,
+  tot_withinss = NA_real_,   # from k-prototypes (elbow)
+  avg_sil      = NA_real_    # silhouette on Gower
+)
+
+for (i in seq_along(ks)) {
+  k  <- ks[i]
+  fit <- kproto(obesity_habits, k = k, nstart = 15)
+  fits[[i]] <- fit
   
-  #calculate betweenss manually and ratio
-  betweenss <- totss - kmeans.out[[g]]$tot.withinss
-  ratio[g] <- betweenss * (nrow(obesity_habits) - g) / (kmeans.out[[g]]$tot.withinss * (g - 1))
+  # elbow: total within-cluster "distance" from the model itself
+  metrics$tot_withinss[i] <- fit$tot.withinss
+  
+  # silhouette: use Gower distance + cluster labels from k-prototypes
+  sil <- silhouette(fit$cluster, gower_dist)
+  metrics$avg_sil[i] <- mean(sil[, 3])
 }
 
-#plots
-plot(2:10, ratio[2:10], type = "b", pch = 19,
-     xlab = "Number of Clusters (g)", ylab = "Ratio",
-     main = "Choosing Optimal Number of Clusters")
+#print(metrics)
 
-plot(kmeans.out[[2]])
-kmeans.out[[2]]$cluster
+# pick best k by silhouette (you could also inspect elbow bend)
+best_idx <- which.max(metrics$avg_sil)
+best_k   <- metrics$k[best_idx]
+best_fit <- fits[[best_idx]]
+
+cat("Best k by silhouette:", best_k,
+    " | avg silhouette =", round(metrics$avg_sil[best_idx], 3), "\n")
+
+# --- plots ---
+# Elbow (tot.withinss)
+ggplot(metrics, aes(k, tot_withinss)) +
+  geom_point() + geom_line() +
+  labs(title = "k-prototypes elbow", x = "k", y = "Total withinss")
+
+# Silhouette vs k
+ggplot(metrics, aes(k, avg_sil)) +
+  geom_point() + geom_line() +
+  labs(title = "Average silhouette (Gower) vs k", x = "k", y = "Avg silhouette")
+
+# --- Cluster Plot ----
+obesity_habits$cluster <- factor(best_fit$cluster)
+
+# helper: mode (most frequent category)
+mode1 <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) return(NA)
+  names(sort(table(x), decreasing = TRUE))[1]
+}
+
+# Categorical features: mode by cluster
+profile_cat <- obesity_habits %>%
+  group_by(cluster) %>%
+  summarise(
+    CAEC_mode   = mode1(CAEC),
+    CALC_mode   = mode1(CALC),
+    SMOKE_mode  = mode1(SMOKE),
+    FAVC_mode   = mode1(FAVC),
+    MTRANS_mode = mode1(MTRANS),
+    .groups = "drop"
+  )
+
+# Numeric features: mean by cluster
+profile_num <- obesity_habits %>%
+  group_by(cluster) %>%
+  summarise(
+    CH2O_mean = round(mean(CH2O, na.rm = TRUE), 2),
+    FAF_mean  = round(mean(FAF, na.rm = TRUE), 2),
+    .groups = "drop"
+  )
+
+profile_cat
+profile_num
+
+# Trying to plot as graph
+par(mfrow=c(2,2), mar=c(4,4,2,1))
+# (1) elbow
+plot(metrics$k, metrics$tot_withinss, type="b", pch=19,
+     xlab="Number of Clusters (k)", ylab="Total withinss",
+     main="Choosing Optimal Number of Clusters")
+
+# attach clusters
+plotdat <- transform(obesity_habits, cluster = factor(best_fit$cluster))
+
+# (2) numeric boxplot (pick one)
+boxplot(CH2O ~ cluster, data=plotdat, main="CH2O", xlab="cluster", ylab="CH2O")
+
+# (3) categorical bars
+barplot(t(prop.table(table(plotdat$cluster, plotdat$CALC), 1)),
+        beside=TRUE, legend=TRUE, main="CALC", xlab="cluster", ylab="proportion")
+
+# (4) categorical bars
+barplot(t(prop.table(table(plotdat$cluster, plotdat$SMOKE), 1)),
+        beside=TRUE, legend=TRUE, main="SMOKE", xlab="cluster", ylab="proportion")
+
+par(mfrow=c(1,2), mar=c(4,4,2,1))
+
+# (5) FAVC (high-calorie food consumption)
+tab_favc <- prop.table(table(plotdat$cluster, plotdat$FAVC), margin = 1)
+barplot(t(tab_favc), beside = TRUE, legend = TRUE,
+        main = "FAVC", xlab = "cluster", ylab = "proportion")
+
+# (6)  MTRANS (transportation)
+tab_mtrans <- prop.table(table(plotdat$cluster, plotdat$MTRANS), margin = 1)
+barplot(t(tab_mtrans), beside = TRUE, legend = TRUE,
+        main = "MTRANS", xlab = "cluster", ylab = "proportion")
+# (7) NCP Number Of Meals
+boxplot(NCP ~ cluster, data=obesity_habits,
+        main="NCP (Number of Meals)", xlab="Cluster", ylab="Meals per day")
+
+# --- Regression ---
+# Habits-only regression
+reg_habits <- lm(Weight ~ NCP + CALC + FAVC + SMOKE + CH2O + FAF + MTRANS + CAEC, 
+                 data = obesity)
+
+summary(reg_habits)
 
 
-#SEPERATE CLUSTERS
-clusters <- kmeans.out[[2]]$cluster
-cluster_1 <- obesity[clusters == 1, ]
-cluster_2 <- obesity[clusters == 2, ]
 
-#investigating NCP bc its weird
-ncp_cluster1 <- cluster_1$NCP
-mean_ncp <- mean(ncp_cluster1)
-median_ncp <- median(ncp_cluster1)
-q1_ncp <- quantile(ncp_cluster1, 0.25)
-q3_ncp <- quantile(ncp_cluster1, 0.75)
-min_ncp <- min(ncp_cluster1)
-max_ncp <- max(ncp_cluster1)
-
-cat("Mean:", mean_ncp, "\n")
-cat("Median:", median_ncp, "\n")
-cat("Q1:", q1_ncp, "\n")
-cat("Q3:", q3_ncp, "\n")
-cat("Min:", min_ncp, "\n")
-cat("Max:", max_ncp, "\n")
-
-#and cluster 2
-ncp_cluster2 <- cluster_2$NCP
-mean_ncp2 <- mean(ncp_cluster2)
-median_ncp2 <- median(ncp_cluster2)
-q1_ncp2 <- quantile(ncp_cluster2, 0.25)
-q3_ncp2 <- quantile(ncp_cluster2, 0.75)
-min_ncp2 <- min(ncp_cluster2)
-max_ncp2 <- max(ncp_cluster2)
-
-cat("Mean:", mean_ncp2, "\n")
-cat("Median:", median_ncp2, "\n")
-cat("Q1:", q1_ncp2, "\n")
-cat("Q3:", q3_ncp2, "\n")
-cat("Min:", min_ncp2, "\n")
-cat("Max:", max_ncp2, "\n")
-
-
-regression_cluster_1 <- lm(Weight ~ NCP + CALC + SMOKE+ CH2O + FAVC + FAF + MTRANS, data=cluster_1)
-regression_cluster_2 <- lm(Weight ~ NCP + CALC + SMOKE+ CH2O + FAVC + FAF + MTRANS, data=cluster_2)
-#cannot graph :(
-#give interpretation of coefficents
-
-summary(regression_cluster_1)
-summary(regression_cluster_2)

@@ -2,7 +2,7 @@ library(dplyr)
 library(cluster)
 library(ggplot2)
 
-df <- read.csv("C:/Users/heath/OneDrive/Documents/Math151/151Project/ObesityDataSet.csv")
+df <- read.csv("C:/Users/heath/OneDrive/Documents/Book Math/151/Project/ObesityDataSet.csv")
 
 # CREATING CLUSTER STEPS
 
@@ -19,7 +19,6 @@ for (g in 2:6) {
   kmeans.out[[g]] <- kmeans(x = physical_scaled, centers = g, nstart = 50)
   ratio[g] <- kmeans.out[[g]]$betweenss*(nrow(physical_scaled)-g)/(kmeans.out[[g]]$tot.withinss*(g-1))
 }
-
 
 # Step 4: Find best number of clusters
 best.k <- which.max(ratio==max(ratio,na.rm=TRUE))
